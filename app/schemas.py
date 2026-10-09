@@ -84,6 +84,7 @@ class StatusResponse(BaseModel):
 
 class SystemPromptResponse(BaseModel):
     system_prompt: str
+    hint: Optional[str] = None
 
 
 class SimpleResponse(BaseModel):

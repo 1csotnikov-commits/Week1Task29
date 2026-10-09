@@ -163,6 +163,17 @@ def _human_size(num: int | None) -> str:
     return f"{value:.1f} {units[idx]}"
 
 
+def _prompt_change_note(session: Session) -> str:
+    """Примечание: смена промпта не влияет на уже накопленную историю."""
+    count = session.history_length()
+    if count > 0:
+        return (
+            f"\n\n⚠️ Промпт применён к новым сообщениям. В истории {count} сообщ. — "
+            "выполните /clear, чтобы промпт действовал «с чистого листа»."
+        )
+    return ""
+
+
 def _fmt_uptime(seconds: float) -> str:
     """Форматирует аптайм в виде «1 ч 5 мин 3 с»."""
     total = int(seconds)
@@ -270,7 +281,8 @@ async def cmd_system(ctx: CommandContext, args: str) -> CommandResult:
         profile = cfg.get_task_profile()
         ctx.session.system_prompt = profile.system_prompt
         return CommandResult(
-            "Системный промпт сброшен к дефолту профиля:\n\n" + profile.system_prompt,
+            "Системный промпт сброшен к дефолту профиля:\n\n" + profile.system_prompt
+            + _prompt_change_note(ctx.session),
             data={"action": "system", "system": profile.system_prompt},
         )
 
@@ -297,14 +309,15 @@ async def cmd_system(ctx: CommandContext, args: str) -> CommandResult:
             return CommandResult(f"Профиль «{name}» не найден. Доступные: {available}", ok=False)
         ctx.session.system_prompt = prof.get("system_prompt") or ""
         return CommandResult(
-            f"Системный промпт загружен из «{name}»:\n\n{ctx.session.system_prompt}",
+            f"Системный промпт загружен из «{name}»:\n\n{ctx.session.system_prompt}"
+            + _prompt_change_note(ctx.session),
             data={"action": "system", "system": ctx.session.system_prompt},
         )
 
     # Иначе — задать новый системный промпт.
     ctx.session.system_prompt = args
     return CommandResult(
-        f"Системный промпт обновлён:\n\n{args}",
+        f"Системный промпт обновлён:\n\n{args}" + _prompt_change_note(ctx.session),
         data={"action": "system", "system": args},
     )
 
@@ -493,7 +506,8 @@ async def cmd_profile(ctx: CommandContext, args: str) -> CommandResult:
         ctx.session.apply_profile(prof)
         return CommandResult(
             f"Профиль «{name}» загружен. Модель: {ctx.session.model}\n\n"
-            + _format_params(ctx.session.params),
+            + _format_params(ctx.session.params)
+            + _prompt_change_note(ctx.session),
             data={
                 "action": "profile",
                 "profile": name,

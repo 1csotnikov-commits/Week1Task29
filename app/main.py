@@ -190,6 +190,22 @@ async def run_command(request: Request, text: str) -> cmd.CommandResult:
     return await cmd.dispatch(text, ctx)
 
 
+def history_hint(session: Session) -> str | None:
+    """Подсказка о том, что смена промпта не влияет на накопленную историю.
+
+    Системный промпт добавляется к каждому запросу первым сообщением, но ранее
+    накопленные пары «вопрос–ответ» остаются в истории и сильно влияют на
+    поведение модели. Поэтому после смены промпта чат лучше очистить.
+    """
+    count = session.history_length()
+    if count > 0:
+        return (
+            f"Изменение применится к новым сообщениям. В истории уже {count} сообщ. — "
+            "нажмите «Очистить чат», чтобы новый промпт действовал «с чистого листа»."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Веб-интерфейс
 # ---------------------------------------------------------------------------
@@ -292,7 +308,10 @@ async def api_set_system(request: Request, payload: SystemPromptRequest):
     session = get_session(request)
     session.system_prompt = payload.prompt
     log.info("Системный промпт обновлён (длина %s символов).", len(payload.prompt))
-    return SystemPromptResponse(system_prompt=session.system_prompt)
+    return SystemPromptResponse(
+        system_prompt=session.system_prompt,
+        hint=history_hint(session),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +443,7 @@ async def api_load_profile(request: Request, payload: ProfileNameRequest):
         "model": session.model,
         "params": session.params.to_dict(),
         "system_prompt": session.system_prompt,
+        "hint": history_hint(session),
     }
 
 

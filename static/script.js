@@ -194,8 +194,8 @@ async function loadSystemPrompt() {
 
 async function saveSystemPrompt() {
   try {
-    await postJSON("/api/system", { prompt: els.systemPrompt.value });
-    addMessage("system", "Системный промпт сохранён.");
+    const r = await postJSON("/api/system", { prompt: els.systemPrompt.value });
+    addMessage("system", "Системный промпт сохранён." + (r.hint ? "\n\n" + r.hint : ""));
   } catch (e) {
     addMessage("error", "Ошибка сохранения промпта: " + e.message);
   }
@@ -205,7 +205,7 @@ async function resetSystemPrompt() {
   try {
     const r = await postJSON("/api/chat", { message: "/system reset", stream: false });
     if (r.data && r.data.system !== undefined) els.systemPrompt.value = r.data.system;
-    addMessage("system", "Системный промпт сброшен к дефолту профиля.");
+    addMessage("system", r.text || "Системный промпт сброшен к дефолту профиля.");
   } catch (e) {
     addMessage("error", "Ошибка сброса промпта: " + e.message);
   }
@@ -250,7 +250,8 @@ async function loadProfile() {
     if (r.params) fillParams(r.params, name);
     if (r.system_prompt !== undefined) els.systemPrompt.value = r.system_prompt;
     if (r.model) selectModelValue(r.model);
-    addMessage("system", r.message || ("Профиль «" + name + "» загружен."));
+    addMessage("system", (r.message || ("Профиль «" + name + "» загружен.")) +
+      (r.hint ? "\n\n" + r.hint : ""));
     await loadModels();
     await refreshStatus();
   } catch (e) {
