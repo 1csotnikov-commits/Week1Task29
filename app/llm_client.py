@@ -72,6 +72,15 @@ class ContextLengthError(LLMError):
 # Маркеры для распознавания текстовых ошибок Ollama
 _CONTEXT_MARKERS = ("exceeds", "context size", "num_ctx", "context length", "too long")
 _NOT_FOUND_MARKERS = ("not found", "no such model", "model not found", "pull model")
+# Ошибки нехватки памяти при слишком большом num_ctx / модели.
+_MEMORY_MARKERS = (
+    "requires more", "insufficient memory", "out of memory", "not enough memory",
+    "failed to allocate", "out of vram", "not enough vram",
+)
+_MEMORY_MESSAGE = (
+    "Недостаточно памяти/VRAM для запрошенного размера контекста (num_ctx слишком велик). "
+    "Уменьшите num_ctx на панели «Параметры» или выгрузите другие модели командой /unload."
+)
 
 
 def _contains(text: str, markers: tuple[str, ...]) -> bool:
@@ -155,6 +164,24 @@ class OllamaClient:
             pass
         return []
 
+    async def list_running(self) -> list[str]:
+        """Имена моделей, загруженных в память сейчас (для метрик ресурсов)."""
+        return [m.get("name", "") for m in await self.ps() if m.get("name")]
+
+    async def unload_all(self) -> list[str]:
+        """Выгружает из VRAM все загруженные модели. Возвращает имена выгруженных.
+
+        Используется перед замерами ресурсов, чтобы стартовать с «холодной» VRAM.
+        """
+        unloaded: list[str] = []
+        for name in await self.list_running():
+            try:
+                await self.unload_model(name)
+                unloaded.append(name)
+            except LLMError as exc:
+                log.warning("Не удалось выгрузить модель %s: %s", name, exc.message)
+        return unloaded
+
     async def ensure_model(self, model: str) -> None:
         """Проверяет, что модель установлена; иначе — ModelNotFoundError."""
         available = await self.list_models()
@@ -182,6 +209,46 @@ class OllamaClient:
             raise LLMError(f"Не удалось выгрузить модель {model} из памяти.", detail=resp.text)
         log.info("Модель %s выгружена из VRAM (keep_alive=0).", model)
 
+    async def generate_raw(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        params: GenerationParams | None = None,
+    ) -> dict[str, Any]:
+        """Нативный вызов /api/chat (stream=false) с полными метриками.
+
+        Возвращает сырой ответ Ollama: текст ответа, счётчики токенов и
+        тайминги (eval_count, eval_duration, load_duration, prompt_eval_*).
+        Используется инструментами сравнения и сбора метрик (tools/*).
+        """
+        params = params or cfg.DEFAULT_GENERATION
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": params.to_ollama_options(),
+            "keep_alive": params.keep_alive,
+        }
+        try:
+            resp = await self._http.post("/api/chat", json=payload)
+        except httpx.RequestError as exc:
+            raise OllamaUnavailableError(cfg.OLLAMA_START_HINT, detail=str(exc)) from exc
+
+        if resp.status_code >= 400:
+            text = resp.text
+            if resp.status_code == 404 or _contains(text, _NOT_FOUND_MARKERS):
+                raise ModelNotFoundError(model)
+            if _contains(text, _MEMORY_MARKERS):
+                raise ContextLengthError(_MEMORY_MESSAGE, detail=text)
+            if _contains(text, _CONTEXT_MARKERS):
+                raise ContextLengthError(
+                    "Превышен размер контекста модели (num_ctx). Увеличьте num_ctx "
+                    "(например, до 16384) или уменьшите объём запроса.",
+                    detail=text,
+                )
+            raise LLMError(f"Ошибка Ollama при генерации ({model}): {text}", detail=text)
+        return resp.json()
+
     # -- генерация ---------------------------------------------------------
     def _build_kwargs(
         self,
@@ -195,19 +262,19 @@ class OllamaClient:
         extra_body.options (проверено: OpenAI-эндпоинт Ollama их принимает).
         """
         params = params or cfg.DEFAULT_GENERATION
+        # Все параметры Ollama передаём единым блоком options (top_k,
+        # repeat_penalty, seed не входят в стандарт OpenAI API).
+        options = params.to_ollama_options()
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": params.temperature,
             "top_p": params.top_p,
-            "extra_body": {
-                "options": {"num_ctx": params.num_ctx},
-                "keep_alive": params.keep_alive,
-            },
+            "extra_body": {"options": options, "keep_alive": params.keep_alive},
         }
-        # max_tokens <= 0 означает «без ограничения» — параметр не передаём.
-        if params.max_tokens and params.max_tokens > 0:
-            kwargs["max_tokens"] = params.max_tokens
+        # num_predict > 0 ограничивает длину ответа; иначе — без ограничения.
+        if params.num_predict and params.num_predict > 0:
+            kwargs["max_tokens"] = params.num_predict
         return kwargs
 
     def _map_error(self, exc: Exception, model: str) -> LLMError:
@@ -224,6 +291,9 @@ class OllamaClient:
             )
         if isinstance(exc, NotFoundError):
             return ModelNotFoundError(model)
+        # Нехватка памяти (слишком большой num_ctx) — раньше остальных текстовых проверок.
+        if _contains(text, _MEMORY_MARKERS):
+            return ContextLengthError(_MEMORY_MESSAGE, detail=text)
         if isinstance(exc, BadRequestError):
             if _contains(text, _CONTEXT_MARKERS):
                 return ContextLengthError(

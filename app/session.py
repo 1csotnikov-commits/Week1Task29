@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from . import config as cfg
+from .config import GenerationParams
 
 VALID_ROLES = ("system", "user", "assistant")
 
@@ -44,10 +45,13 @@ class Session:
     ) -> None:
         self._lock = asyncio.Lock()
         self.started_at: float = time.time()
+        profile = cfg.get_task_profile()
         self.model: str = model or cfg.DEFAULT_MODEL
         self.system_prompt: str = (
-            system_prompt if system_prompt is not None else cfg.DEFAULT_SYSTEM_PROMPT
+            system_prompt if system_prompt is not None else profile.system_prompt
         )
+        # Текущие параметры генерации (День 29). Стартуем со значений профиля задачи.
+        self.params: GenerationParams = GenerationParams(**profile.params.to_dict())
         self.messages: list[Message] = []
 
     # -- работа с историей -------------------------------------------------
@@ -68,11 +72,30 @@ class Session:
             self.messages.clear()
 
     async def reset(self) -> None:
-        """Полный сброс к значениям по умолчанию."""
+        """Полный сброс к значениям по умолчанию (модель, промпт, параметры)."""
+        profile = cfg.get_task_profile()
         async with self._lock:
             self.messages.clear()
             self.model = cfg.DEFAULT_MODEL
-            self.system_prompt = cfg.DEFAULT_SYSTEM_PROMPT
+            self.system_prompt = profile.system_prompt
+            self.params = GenerationParams(**profile.params.to_dict())
+
+    # -- параметры генерации и профили (День 29) --------------------------
+    def update_params(self, values: dict) -> GenerationParams:
+        """Частично обновляет параметры генерации."""
+        for key, value in (values or {}).items():
+            if hasattr(self.params, key) and value is not None:
+                setattr(self.params, key, value)
+        return self.params
+
+    def apply_profile(self, profile: dict) -> None:
+        """Применяет профиль (модель + системный промпт + параметры) к сессии."""
+        if profile.get("model"):
+            self.model = profile["model"]
+        if profile.get("system_prompt") is not None:
+            self.system_prompt = profile["system_prompt"]
+        if profile.get("params"):
+            self.params = GenerationParams.from_dict(profile["params"])
 
     # -- формирование запроса к LLM ---------------------------------------
     def to_llm_messages(self) -> list[dict[str, str]]:
@@ -95,6 +118,7 @@ class Session:
             "exported_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
             "model": self.model,
             "system_prompt": self.system_prompt,
+            "params": self.params.to_dict(),
             "messages_count": self.history_length(),
             "messages": [asdict(m) for m in self.messages],
         }

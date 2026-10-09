@@ -16,16 +16,20 @@ from pydantic import BaseModel, Field
 # Запросы
 # ---------------------------------------------------------------------------
 class GenerationOverrides(BaseModel):
-    """Необязательные переопределения параметров генерации.
+    """Параметры генерации (День 29: полный набор).
 
-    На Дне 27 UI их не отправляет, но эндпоинт уже принимает —
-    на Дне 29 останется только добавить элементы управления на фронте.
+    Используется и в POST /api/chat (разовое переопределение), и в
+    POST /api/params (обновление текущих параметров).
     """
 
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    max_tokens: Optional[int] = Field(default=None, ge=-1)
-    num_ctx: Optional[int] = Field(default=None, ge=1)
+    top_k: Optional[int] = Field(default=None, ge=0, le=1000)
+    repeat_penalty: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    num_predict: Optional[int] = Field(default=None, ge=-1, le=32768)
+    num_ctx: Optional[int] = Field(default=None, ge=512, le=131072)
+    seed: Optional[int] = Field(default=None)
+    keep_alive: Optional[str] = Field(default=None)
 
 
 class ChatRequest(BaseModel):
@@ -106,3 +110,52 @@ class ErrorResponse(BaseModel):
     ok: bool = False
     error: str
     detail: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# День 29: параметры генерации и профили
+# ---------------------------------------------------------------------------
+class ParamsResponse(BaseModel):
+    params: dict[str, Any]
+    defaults: dict[str, Any]
+    profile: str
+
+
+class ProfileInfo(BaseModel):
+    name: str
+    description: str = ""
+    model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    params: Optional[dict[str, Any]] = None
+    builtin: bool = False
+    created_at: Optional[str] = None
+
+
+class ProfilesResponse(BaseModel):
+    profiles: list[ProfileInfo]
+    count: int
+
+
+class ProfileSaveRequest(BaseModel):
+    """Сохранение текущего состояния как профиля."""
+
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    model: Optional[str] = None
+    system: Optional[str] = None
+    params: Optional[GenerationOverrides] = None
+
+
+class ProfileNameRequest(BaseModel):
+    """Загрузка/удаление профиля по имени."""
+
+    name: str = Field(..., min_length=1)
+
+
+class CompareRequest(BaseModel):
+    """Ручной запуск сравнения из UI (опционально)."""
+
+    profile: Optional[str] = None
+    configs: list[str] = Field(default_factory=lambda: ["baseline", "optimized", "qat"])
+    seed: int = 42
+    judge: bool = True

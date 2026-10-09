@@ -214,3 +214,101 @@ select#model-select {
   font-size: 12px;
   border-top: 1px solid var(--border);
 }
+
+/* ===================== День 29: панель параметров ===================== */
+.badge {
+  font-size: 11px;
+  background: var(--user);
+  color: #fff;
+  border-radius: 10px;
+  padding: 2px 8px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+
+.layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.chat { flex: 1; min-width: 0; }
+
+.panel {
+  width: 340px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.panel.hidden { display: none; }
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.panel-section h3 {
+  margin: 0 0 2px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+
+.field { display: flex; flex-direction: column; gap: 3px; }
+.field label {
+  font-size: 13px;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.field .val { color: var(--muted); font-variant-numeric: tabular-nums; }
+.field input[type="range"] { width: 100%; }
+
+.field input[type="number"],
+.panel select,
+.panel textarea,
+#profile-name {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--text);
+}
+.panel textarea { resize: vertical; line-height: 1.35; }
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.row input[type="text"] { flex: 1; min-width: 90px; }
+
+.profile-name {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ok);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .panel {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 10;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, .15);
+  }
+}
+

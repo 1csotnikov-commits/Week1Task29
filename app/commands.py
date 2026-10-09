@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from . import config as cfg
+from . import profiles as profiles_mod
+from .config import GenerationParams
 from .llm_client import LLMError, ModelNotFoundError, OllamaUnavailableError
 from .session import Session
 
@@ -252,13 +254,58 @@ async def cmd_unload(ctx: CommandContext, args: str) -> CommandResult:
 
 
 async def cmd_system(ctx: CommandContext, args: str) -> CommandResult:
-    if not args.strip():
+    args = args.strip()
+
+    # Без аргументов — показать текущий промпт.
+    if not args:
         current = ctx.session.system_prompt or "(пусто)"
         return CommandResult(f"Текущий системный промпт:\n\n{current}")
+
+    head, _, tail = args.partition(" ")
+    head = head.lower()
+    name = tail.strip()
+
+    # /system reset — вернуть дефолт из профиля задачи.
+    if args.lower() == "reset":
+        profile = cfg.get_task_profile()
+        ctx.session.system_prompt = profile.system_prompt
+        return CommandResult(
+            "Системный промпт сброшен к дефолту профиля:\n\n" + profile.system_prompt,
+            data={"action": "system", "system": profile.system_prompt},
+        )
+
+    # /system save <имя> — сохранить именованный промпт.
+    if head == "save":
+        if not name:
+            return CommandResult("Использование: /system save <имя>", ok=False)
+        profiles_mod.save_profile(
+            name,
+            model=ctx.session.model,
+            system_prompt=ctx.session.system_prompt,
+            params=ctx.session.params.to_dict(),
+            description="Именованный промпт",
+        )
+        return CommandResult(f"Системный промпт сохранён как «{name}».")
+
+    # /system load <имя> — загрузить именованный промпт.
+    if head == "load":
+        if not name:
+            return CommandResult("Использование: /system load <имя>", ok=False)
+        prof = profiles_mod.get_profile(name)
+        if not prof:
+            available = ", ".join(p["name"] for p in profiles_mod.list_profiles())
+            return CommandResult(f"Профиль «{name}» не найден. Доступные: {available}", ok=False)
+        ctx.session.system_prompt = prof.get("system_prompt") or ""
+        return CommandResult(
+            f"Системный промпт загружен из «{name}»:\n\n{ctx.session.system_prompt}",
+            data={"action": "system", "system": ctx.session.system_prompt},
+        )
+
+    # Иначе — задать новый системный промпт.
     ctx.session.system_prompt = args
     return CommandResult(
         f"Системный промпт обновлён:\n\n{args}",
-        data={"action": "system"},
+        data={"action": "system", "system": args},
     )
 
 
@@ -315,6 +362,162 @@ async def cmd_ping(ctx: CommandContext, args: str) -> CommandResult:
 
 
 # ---------------------------------------------------------------------------
+# День 29: команды работы с параметрами генерации
+# ---------------------------------------------------------------------------
+PARAM_FLOAT_KEYS = ("temperature", "top_p", "repeat_penalty")
+PARAM_INT_KEYS = ("top_k", "num_predict", "num_ctx", "seed")
+PARAM_KEYS = PARAM_FLOAT_KEYS + PARAM_INT_KEYS
+
+_PARAM_ORDER = (
+    "temperature", "top_p", "top_k", "repeat_penalty",
+    "num_predict", "num_ctx", "seed", "keep_alive",
+)
+
+
+def _format_params(params: GenerationParams) -> str:
+    """Человекочитаемый список текущих параметров генерации."""
+    d = params.to_dict()
+    lines = ["Текущие параметры генерации:", ""]
+    for key in _PARAM_ORDER:
+        lines.append(f"  {key:<15} = {d.get(key)}")
+    return "\n".join(lines)
+
+
+def _coerce_param(key: str, raw: str):
+    """Приводит строковое значение к типу параметра."""
+    if key in PARAM_INT_KEYS:
+        return int(raw)
+    if key in PARAM_FLOAT_KEYS:
+        return float(raw)
+    return raw
+
+
+async def cmd_params(ctx: CommandContext, args: str) -> CommandResult:
+    args = args.strip()
+
+    # Показать параметры.
+    if not args or args.lower() == "show":
+        return CommandResult(
+            _format_params(ctx.session.params),
+            data={"action": "params", "params": ctx.session.params.to_dict()},
+        )
+
+    parts = args.split()
+    action = parts[0].lower()
+
+    # Сброс к дефолтам профиля.
+    if action == "reset":
+        profile = cfg.get_task_profile()
+        ctx.session.params = GenerationParams(**profile.params.to_dict())
+        return CommandResult(
+            "Параметры сброшены к дефолтам профиля.\n\n" + _format_params(ctx.session.params),
+            data={"action": "params", "params": ctx.session.params.to_dict()},
+        )
+
+    # Разбор «set <ключ> <значение>» и сокращённой формы «<ключ> <значение>».
+    if action == "set":
+        if len(parts) < 3:
+            return CommandResult(
+                "Использование: /params set <ключ> <значение>. Пример: /params set temperature 0.2",
+                ok=False,
+            )
+        key, raw = parts[1].lower(), " ".join(parts[2:])
+    elif action in PARAM_KEYS and len(parts) >= 2:
+        key, raw = action, " ".join(parts[1:])
+    else:
+        return CommandResult(
+            "Использование: /params [set <ключ> <значение> | reset]. "
+            "Доступные параметры: " + ", ".join(PARAM_KEYS),
+            ok=False,
+        )
+
+    if key not in PARAM_KEYS:
+        return CommandResult(
+            f"Неизвестный параметр: {key}. Доступные: {', '.join(PARAM_KEYS)}", ok=False
+        )
+    try:
+        value = _coerce_param(key, raw)
+    except ValueError:
+        return CommandResult(f"Некорректное значение для {key}: «{raw}»", ok=False)
+
+    ctx.session.update_params({key: value})
+    return CommandResult(
+        f"Параметр {key} = {value}.\n\n" + _format_params(ctx.session.params),
+        data={"action": "params", "params": ctx.session.params.to_dict()},
+    )
+
+
+async def cmd_profile(ctx: CommandContext, args: str) -> CommandResult:
+    """Управление профилями: list / save / load / delete."""
+    parts = args.split(maxsplit=1)
+    action = parts[0].lower() if parts and parts[0] else "list"
+    name = parts[1].strip() if len(parts) > 1 else ""
+
+    if action == "list":
+        profiles = profiles_mod.list_profiles()
+        if not profiles:
+            return CommandResult("Профили не найдены.")
+        lines = ["Профили:", ""]
+        for p in profiles:
+            kind = "встроенный" if p.get("builtin") else "пользовательский"
+            lines.append(f"  • {p['name']}   [{kind}, модель: {p.get('model') or '—'}]")
+            if p.get("description"):
+                lines.append(f"      {p['description']}")
+        lines += ["", "Загрузить: /profile load <имя>, сохранить: /profile save <имя>, "
+                      "удалить: /profile delete <имя>."]
+        return CommandResult("\n".join(lines))
+
+    if action == "save":
+        if not name:
+            return CommandResult("Использование: /profile save <имя>", ok=False)
+        try:
+            profiles_mod.save_profile(
+                name,
+                model=ctx.session.model,
+                system_prompt=ctx.session.system_prompt,
+                params=ctx.session.params.to_dict(),
+            )
+        except ValueError as exc:
+            return CommandResult(str(exc), ok=False)
+        return CommandResult(
+            f"Профиль «{name}» сохранён (модель: {ctx.session.model})."
+        )
+
+    if action == "load":
+        if not name:
+            return CommandResult("Использование: /profile load <имя>", ok=False)
+        prof = profiles_mod.get_profile(name)
+        if not prof:
+            available = ", ".join(p["name"] for p in profiles_mod.list_profiles())
+            return CommandResult(f"Профиль «{name}» не найден. Доступные: {available}", ok=False)
+        ctx.session.apply_profile(prof)
+        return CommandResult(
+            f"Профиль «{name}» загружен. Модель: {ctx.session.model}\n\n"
+            + _format_params(ctx.session.params),
+            data={
+                "action": "profile",
+                "profile": name,
+                "model": ctx.session.model,
+                "params": ctx.session.params.to_dict(),
+                "system": ctx.session.system_prompt,
+            },
+        )
+
+    if action == "delete":
+        if not name:
+            return CommandResult("Использование: /profile delete <имя>", ok=False)
+        if profiles_mod.delete_profile(name):
+            return CommandResult(f"Профиль «{name}» удалён.")
+        return CommandResult(
+            f"Профиль «{name}» не найден (встроенные профили удалить нельзя).", ok=False
+        )
+
+    return CommandResult(
+        "Использование: /profile [list | save <имя> | load <имя> | delete <имя>]", ok=False
+    )
+
+
+# ---------------------------------------------------------------------------
 # Регистрация команд в реестре
 # ---------------------------------------------------------------------------
 def _register_default_commands() -> None:
@@ -326,7 +529,30 @@ def _register_default_commands() -> None:
         CommandSpec("model", "Переключить модель (старая выгружается из VRAM)", "<имя>", cmd_model)
     )
     register(CommandSpec("unload", "Выгрузить текущую модель из памяти Ollama", "", cmd_unload))
-    register(CommandSpec("system", "Показать или задать системный промпт", "[текст]", cmd_system))
+    register(
+        CommandSpec(
+            "system",
+            "Показать/задать промпт: /system [текст | reset | save <имя> | load <имя>]",
+            "[текст|reset|save|load]",
+            cmd_system,
+        )
+    )
+    register(
+        CommandSpec(
+            "params",
+            "Параметры генерации: /params [set <ключ> <значение> | reset]",
+            "[set|reset]",
+            cmd_params,
+        )
+    )
+    register(
+        CommandSpec(
+            "profile",
+            "Профили: /profile [list | save <имя> | load <имя> | delete <имя>]",
+            "[list|save|load|delete]",
+            cmd_profile,
+        )
+    )
     register(
         CommandSpec(
             "status",

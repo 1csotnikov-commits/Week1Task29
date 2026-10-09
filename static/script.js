@@ -17,10 +17,33 @@ const els = {
   metaHistory: document.getElementById("meta-history"),
   metaModel: document.getElementById("meta-model"),
   metaUptime: document.getElementById("meta-uptime"),
+  // --- День 29: панель параметров ---
+  panel: document.getElementById("panel"),
+  panelToggle: document.getElementById("btn-panel"),
+  profileLabel: document.getElementById("profile-label"),
+  temperature: document.getElementById("p-temperature"),
+  topP: document.getElementById("p-top-p"),
+  topK: document.getElementById("p-top-k"),
+  repeat: document.getElementById("p-repeat"),
+  numPredict: document.getElementById("p-num-predict"),
+  numCtx: document.getElementById("p-num-ctx"),
+  seed: document.getElementById("p-seed"),
+  vTemperature: document.getElementById("v-temperature"),
+  vTopP: document.getElementById("v-top_p"),
+  paramsReset: document.getElementById("btn-params-reset"),
+  systemPrompt: document.getElementById("system-prompt"),
+  systemSave: document.getElementById("btn-system-save"),
+  systemReset: document.getElementById("btn-system-reset"),
+  profileName: document.getElementById("profile-name"),
+  profileSelect: document.getElementById("profile-select"),
+  profileSave: document.getElementById("btn-profile-save"),
+  profileLoad: document.getElementById("btn-profile-load"),
+  profileDelete: document.getElementById("btn-profile-delete"),
 };
 
 let liveBubble = null; // «живой» пузырь ассистента во время стриминга
 let busy = false;       // идёт ли сейчас запрос
+let currentParams = {}; // текущие параметры генерации с бэкенда
 
 /* ------------------------------------------------------------------ */
 /* Утилиты отрисовки                                                    */
@@ -86,6 +109,165 @@ function scrollToBottom() {
 
 function showHint(text) {
   els.modelHint.textContent = text || "";
+}
+
+/* ------------------------------------------------------------------ */
+/* День 29: параметры генерации                                         */
+/* ------------------------------------------------------------------ */
+function setInputValue(el, value) {
+  if (!el) return;
+  el.value = (value === null || value === undefined) ? "" : value;
+}
+
+function updateParamLabels() {
+  if (els.vTemperature) els.vTemperature.textContent = els.temperature.value;
+  if (els.vTopP) els.vTopP.textContent = els.topP.value;
+}
+
+function fillParams(params, profileName) {
+  params = params || {};
+  currentParams = params;
+  setInputValue(els.temperature, params.temperature);
+  setInputValue(els.topP, params.top_p);
+  setInputValue(els.topK, params.top_k);
+  setInputValue(els.repeat, params.repeat_penalty);
+  setInputValue(els.numPredict, params.num_predict);
+  setInputValue(els.numCtx, params.num_ctx);
+  setInputValue(els.seed, params.seed);
+  updateParamLabels();
+  if (profileName !== undefined) {
+    els.profileLabel.textContent = profileName ? "· профиль: " + profileName : "";
+  }
+}
+
+function gatherParams() {
+  return {
+    temperature: parseFloat(els.temperature.value),
+    top_p: parseFloat(els.topP.value),
+    top_k: parseInt(els.topK.value, 10),
+    repeat_penalty: parseFloat(els.repeat.value),
+    num_predict: parseInt(els.numPredict.value, 10),
+    num_ctx: parseInt(els.numCtx.value, 10),
+    seed: els.seed.value === "" ? null : parseInt(els.seed.value, 10),
+  };
+}
+
+async function loadParams() {
+  try {
+    const data = await getJSON("/api/params");
+    fillParams(data.params, data.profile);
+  } catch (e) {
+    addMessage("error", "Не удалось загрузить параметры: " + e.message);
+  }
+}
+
+async function applyParams() {
+  try {
+    const data = await postJSON("/api/params", gatherParams());
+    fillParams(data.params, undefined);
+    addMessage("system", "Параметры применены: temperature=" + data.params.temperature +
+      ", num_predict=" + data.params.num_predict + ", num_ctx=" + data.params.num_ctx + ".");
+  } catch (e) {
+    addMessage("error", "Ошибка применения параметров: " + e.message);
+  }
+}
+
+async function resetParams() {
+  try {
+    const r = await postJSON("/api/chat", { message: "/params reset", stream: false });
+    if (r.data && r.data.params) fillParams(r.data.params, undefined);
+    addMessage("system", "Параметры сброшены к дефолтам профиля.");
+  } catch (e) {
+    addMessage("error", "Ошибка сброса параметров: " + e.message);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* День 29: системный промпт и профили                                  */
+/* ------------------------------------------------------------------ */
+async function loadSystemPrompt() {
+  try {
+    const data = await getJSON("/api/system");
+    els.systemPrompt.value = data.system_prompt || "";
+  } catch (e) { /* не критично */ }
+}
+
+async function saveSystemPrompt() {
+  try {
+    await postJSON("/api/system", { prompt: els.systemPrompt.value });
+    addMessage("system", "Системный промпт сохранён.");
+  } catch (e) {
+    addMessage("error", "Ошибка сохранения промпта: " + e.message);
+  }
+}
+
+async function resetSystemPrompt() {
+  try {
+    const r = await postJSON("/api/chat", { message: "/system reset", stream: false });
+    if (r.data && r.data.system !== undefined) els.systemPrompt.value = r.data.system;
+    addMessage("system", "Системный промпт сброшен к дефолту профиля.");
+  } catch (e) {
+    addMessage("error", "Ошибка сброса промпта: " + e.message);
+  }
+}
+
+async function loadProfiles() {
+  try {
+    const data = await getJSON("/api/profiles");
+    els.profileSelect.innerHTML = "";
+    (data.profiles || []).forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name + (p.builtin ? " (встроенный)" : "") + (p.model ? " · " + p.model : "");
+      els.profileSelect.appendChild(opt);
+    });
+  } catch (e) { /* не критично */ }
+}
+
+async function saveProfile() {
+  const name = (els.profileName.value || "").trim();
+  if (!name) { addMessage("error", "Укажите имя профиля."); return; }
+  try {
+    const r = await postJSON("/api/profiles", {
+      name,
+      params: gatherParams(),
+      system: els.systemPrompt.value,
+    });
+    addMessage("system", r.message || ("Профиль «" + name + "» сохранён."));
+    await loadProfiles();
+    els.profileSelect.value = name;
+    els.profileName.value = "";
+  } catch (e) {
+    addMessage("error", e.message);
+  }
+}
+
+async function loadProfile() {
+  const name = els.profileSelect.value;
+  if (!name) return;
+  try {
+    const r = await postJSON("/api/profiles/load", { name });
+    if (r.params) fillParams(r.params, name);
+    if (r.system_prompt !== undefined) els.systemPrompt.value = r.system_prompt;
+    if (r.model) selectModelValue(r.model);
+    addMessage("system", r.message || ("Профиль «" + name + "» загружен."));
+    await loadModels();
+    await refreshStatus();
+  } catch (e) {
+    addMessage("error", e.message);
+  }
+}
+
+async function deleteProfile() {
+  const name = els.profileSelect.value;
+  if (!name) return;
+  try {
+    const r = await postJSON("/api/profiles/delete", { name });
+    addMessage("system", r.message || ("Профиль «" + name + "» удалён."));
+    await loadProfiles();
+  } catch (e) {
+    addMessage("error", e.message);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -188,7 +370,7 @@ async function sendMessage() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ message: text, stream: true }),
+      body: JSON.stringify({ message: text, stream: true, params: gatherParams() }),
     });
 
     if (!resp.ok || !resp.body) {
@@ -278,6 +460,14 @@ function handleAction(data, evt) {
     if (model) selectModelValue(model);
   } else if (action === "export") {
     downloadExport();
+  } else if (action === "params") {
+    if (data.params) fillParams(data.params, undefined);
+  } else if (action === "profile") {
+    if (data.params) fillParams(data.params, data.profile);
+    if (data.system !== undefined) els.systemPrompt.value = data.system;
+    if (data.model) selectModelValue(data.model);
+  } else if (action === "system") {
+    if (data.system !== undefined) els.systemPrompt.value = data.system;
   }
 }
 
@@ -357,13 +547,34 @@ function wireEvents() {
   });
 
   els.modelSelect.addEventListener("change", (e) => changeModel(e.target.value));
+
+  // --- День 29: панель параметров, промпт, профили ---
+  if (els.panelToggle) {
+    els.panelToggle.addEventListener("click", () => els.panel.classList.toggle("hidden"));
+  }
+  els.temperature.addEventListener("input", updateParamLabels);
+  els.topP.addEventListener("input", updateParamLabels);
+  els.temperature.addEventListener("change", applyParams);
+  els.topP.addEventListener("change", applyParams);
+  [els.topK, els.repeat, els.numPredict, els.numCtx, els.seed].forEach((el) => {
+    el.addEventListener("change", applyParams);
+  });
+  els.paramsReset.addEventListener("click", resetParams);
+  els.systemSave.addEventListener("click", saveSystemPrompt);
+  els.systemReset.addEventListener("click", resetSystemPrompt);
+  els.profileSave.addEventListener("click", saveProfile);
+  els.profileLoad.addEventListener("click", loadProfile);
+  els.profileDelete.addEventListener("click", deleteProfile);
 }
 
 async function init() {
   wireEvents();
   await refreshStatus();
   await loadModels();
-  addMessage("system", "Готово. Введите сообщение или команду /help (кнопка «Справка»).");
+  await loadParams();
+  await loadProfiles();
+  await loadSystemPrompt();
+  addMessage("system", "Готово. Введите сообщение или команду /help. Параметры генерации — на панели справа.");
   setInterval(refreshStatus, 10000);
   els.input.focus();
 }

@@ -1,0 +1,14 @@
+# Modelfile для Дня 29: baseline — День 27: gpt-oss:20b, generic prompt, temp 0.7, ctx 4096
+FROM gpt-oss:20b
+
+SYSTEM """
+Ты — полезный ассистент. Отвечай на русском языке, кратко и по делу.
+"""
+
+PARAMETER temperature 0.7
+PARAMETER top_p 1.0
+PARAMETER top_k 40
+PARAMETER repeat_penalty 1.1
+PARAMETER num_predict -1
+PARAMETER num_ctx 4096
+PARAMETER seed 42

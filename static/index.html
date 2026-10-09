@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Локальный LLM-чат — День 27</title>
+  <title>Локальный LLM-чат — День 29</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Локальный LLM-чат</div>
+    <div class="brand">Локальный LLM-чат <span class="badge">День 29</span></div>
     <div class="status" id="status">
       <span class="dot" id="status-dot"></span>
       <span id="status-text">Проверка доступности Ollama…</span>
@@ -23,9 +23,79 @@
     <button id="btn-help" class="btn ghost" title="Показать справку по командам">Справка</button>
     <button id="btn-clear" class="btn ghost" title="Очистить историю диалога">Очистить чат</button>
     <button id="btn-export" class="btn ghost" title="Скачать историю в JSON">Экспорт</button>
+    <button id="btn-panel" class="btn ghost" title="Показать/скрыть панель настроек">Параметры ▸</button>
   </div>
 
-  <main id="chat" class="chat" aria-live="polite"></main>
+  <div class="layout">
+    <main id="chat" class="chat" aria-live="polite"></main>
+
+    <aside id="panel" class="panel">
+      <section class="panel-section">
+        <h3>Параметры генерации <span class="profile-name" id="profile-label"></span></h3>
+
+        <div class="field">
+          <label for="p-temperature">temperature <span class="val" id="v-temperature"></span></label>
+          <input type="range" id="p-temperature" min="0" max="1.5" step="0.05">
+        </div>
+
+        <div class="field">
+          <label for="p-top-p">top_p <span class="val" id="v-top_p"></span></label>
+          <input type="range" id="p-top-p" min="0" max="1" step="0.05">
+        </div>
+
+        <div class="field">
+          <label for="p-top-k">top_k</label>
+          <input type="number" id="p-top-k" min="0" max="1000" step="1">
+        </div>
+
+        <div class="field">
+          <label for="p-repeat">repeat_penalty</label>
+          <input type="number" id="p-repeat" min="0" max="2" step="0.05">
+        </div>
+
+        <div class="field">
+          <label for="p-num-predict">num_predict (max tokens)</label>
+          <input type="number" id="p-num-predict" min="-1" max="32768" step="32">
+        </div>
+
+        <div class="field">
+          <label for="p-num-ctx">num_ctx (context window)</label>
+          <input type="number" id="p-num-ctx" min="512" max="131072" step="512">
+        </div>
+
+        <div class="field">
+          <label for="p-seed">seed (для воспроизводимости)</label>
+          <input type="number" id="p-seed" step="1">
+        </div>
+
+        <div class="row">
+          <button id="btn-params-reset" class="btn ghost">Сбросить к дефолтам</button>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <h3>Системный промпт</h3>
+        <textarea id="system-prompt" rows="6" placeholder="Системный промпт…"></textarea>
+        <div class="row">
+          <button id="btn-system-save" class="btn primary">Сохранить</button>
+          <button id="btn-system-reset" class="btn ghost">Сбросить</button>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <h3>Профили</h3>
+        <div class="row">
+          <input type="text" id="profile-name" placeholder="имя профиля">
+          <button id="btn-profile-save" class="btn primary">Сохранить как профиль</button>
+        </div>
+        <select id="profile-select" title="Сохранённые профили"></select>
+        <div class="row">
+          <button id="btn-profile-load" class="btn ghost">Загрузить</button>
+          <button id="btn-profile-delete" class="btn ghost">Удалить</button>
+        </div>
+      </section>
+    </aside>
+  </div>
 
   <footer class="composer">
     <textarea id="input" rows="3"
@@ -42,3 +112,4 @@
   <script src="/static/script.js"></script>
 </body>
 </html>
+

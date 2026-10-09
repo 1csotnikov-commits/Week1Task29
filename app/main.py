@@ -20,27 +20,38 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import commands as cmd
 from . import config as cfg
+from . import profiles
 from .commands import _human_size
 from .config import GenerationParams
 from .llm_client import LLMError, ModelNotFoundError, OllamaClient
 from .schemas import (
     ChatRequest,
+    CompareRequest,
+    GenerationOverrides,
     HelpCommandItem,
     HelpResponse,
     ModelInfo,
     ModelRequest,
     ModelsResponse,
+    ParamsResponse,
+    ProfileInfo,
+    ProfileNameRequest,
+    ProfilesResponse,
+    ProfileSaveRequest,
     SimpleResponse,
     StatusResponse,
     SystemPromptRequest,
@@ -76,7 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("Приложение остановлено.")
 
 
-app = FastAPI(title="Локальный LLM-чат (День 27)", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Локальный LLM-чат (День 29)", version="1.1.0", lifespan=lifespan)
 
 # CORS: на Дне 27 открыт всем. На Дне 30 заменить список на конкретные источники.
 app.add_middleware(
@@ -89,6 +100,39 @@ app.add_middleware(
 
 # Статика (CSS/JS).
 app.mount("/static", StaticFiles(directory=str(cfg.STATIC_DIR)), name="static")
+
+
+def _ru_validation_message(err: dict) -> str:
+    """Переводит типовые ошибки Pydantic на русский."""
+    etype = err.get("type", "")
+    loc = ".".join(str(x) for x in err.get("loc", ()) if x not in ("body", "query"))
+    loc = loc or "параметр"
+    mapping = {
+        "less_than_equal": "значение больше допустимого максимума",
+        "greater_than_equal": "значение меньше допустимого минимума",
+        "missing": "обязательный параметр не указан",
+        "int_parsing": "ожидается целое число",
+        "float_parsing": "ожидается число",
+        "int_type": "ожидается целое число",
+        "float_type": "ожидается число",
+        "string_type": "ожидается строка",
+        "string_too_short": "строка слишком короткая",
+    }
+    return f"{loc}: {mapping.get(etype, 'некорректное значение')}"
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Ошибки валидации — понятным русским текстом (без служебного JSON)."""
+    parts = [_ru_validation_message(err) for err in exc.errors()]
+    message = "Некорректные параметры запроса — " + "; ".join(parts)
+    raw = json.dumps(exc.errors(), ensure_ascii=False)
+    if "num_ctx" in raw:
+        message += ". Допустимый диапазон num_ctx: 512…131072 (чем больше, тем больше VRAM)."
+    elif "temperature" in raw:
+        message += ". Допустимый диапазон temperature: 0.0…2.0."
+    log.warning("Ошибка валидации на %s: %s", request.url.path, message)
+    return JSONResponse(status_code=422, content={"ok": False, "error": message})
 
 
 @app.exception_handler(Exception)
@@ -301,30 +345,151 @@ async def api_help() -> HelpResponse:
 
 
 # ---------------------------------------------------------------------------
+# День 29: параметры генерации
+# ---------------------------------------------------------------------------
+def _param_defaults() -> dict:
+    """Дефолтные параметры профиля целевой задачи."""
+    return cfg.get_task_profile().params.to_dict()
+
+
+@app.get("/api/params", response_model=ParamsResponse)
+async def api_get_params(request: Request) -> ParamsResponse:
+    """Текущие параметры генерации + дефолты профиля."""
+    session = get_session(request)
+    return ParamsResponse(
+        params=session.params.to_dict(),
+        defaults=_param_defaults(),
+        profile=cfg.get_task_profile().name,
+    )
+
+
+@app.post("/api/params", response_model=ParamsResponse)
+async def api_set_params(request: Request, payload: GenerationOverrides) -> ParamsResponse:
+    """Обновляет параметры генерации (валидация диапазонов — в схеме)."""
+    session = get_session(request)
+    session.update_params(payload.model_dump(exclude_none=True))
+    log.info("Параметры обновлены: %s", session.params.to_dict())
+    return ParamsResponse(
+        params=session.params.to_dict(),
+        defaults=_param_defaults(),
+        profile=cfg.get_task_profile().name,
+    )
+
+
+# ---------------------------------------------------------------------------
+# День 29: профили
+# ---------------------------------------------------------------------------
+@app.get("/api/profiles", response_model=ProfilesResponse)
+async def api_list_profiles() -> ProfilesResponse:
+    """Список профилей (пользовательские + встроенные)."""
+    items = [ProfileInfo(**p) for p in profiles.list_profiles()]
+    return ProfilesResponse(profiles=items, count=len(items))
+
+
+@app.post("/api/profiles")
+async def api_save_profile(request: Request, payload: ProfileSaveRequest):
+    """Сохраняет текущие (или переданные) параметры + промпт как профиль."""
+    session = get_session(request)
+    params = (
+        payload.params.model_dump(exclude_none=True)
+        if payload.params is not None
+        else session.params.to_dict()
+    )
+    system_prompt = payload.system if payload.system is not None else session.system_prompt
+    try:
+        profiles.save_profile(
+            payload.name,
+            model=payload.model or session.model,
+            system_prompt=system_prompt,
+            params=params,
+            description=payload.description,
+        )
+    except ValueError as exc:
+        return error_json(str(exc))
+    return {"ok": True, "message": f"Профиль «{payload.name}» сохранён."}
+
+
+@app.post("/api/profiles/load")
+async def api_load_profile(request: Request, payload: ProfileNameRequest):
+    """Применяет профиль (модель + промпт + параметры) к текущей сессии."""
+    prof = profiles.get_profile(payload.name)
+    if not prof:
+        return error_json(f"Профиль «{payload.name}» не найден.")
+    session = get_session(request)
+    session.apply_profile(prof)
+    log.info("Загружен профиль: %s", payload.name)
+    return {
+        "ok": True,
+        "message": f"Профиль «{payload.name}» загружен.",
+        "model": session.model,
+        "params": session.params.to_dict(),
+        "system_prompt": session.system_prompt,
+    }
+
+
+@app.post("/api/profiles/delete")
+async def api_delete_profile(payload: ProfileNameRequest):
+    """Удаляет пользовательский профиль."""
+    if profiles.delete_profile(payload.name):
+        return {"ok": True, "message": f"Профиль «{payload.name}» удалён."}
+    return error_json(f"Профиль «{payload.name}» не найден или встроенный — удалить нельзя.")
+
+
+# ---------------------------------------------------------------------------
+# День 29: ручной запуск сравнения (опционально)
+# ---------------------------------------------------------------------------
+@app.post("/api/compare")
+async def api_compare(payload: CompareRequest):
+    """Запускает tools/compare.py в фоне и сразу возвращает ответ.
+
+    Результаты появятся в reports/ (raw_*.json и REPORT_*.md), лог — reports/compare_run.log.
+    """
+    tool = cfg.BASE_DIR / "tools" / "compare.py"
+    if not tool.exists():
+        return error_json("Инструмент tools/compare.py не найден.")
+    cfg.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    cmd_args = [
+        sys.executable, str(tool),
+        "--profile", payload.profile or cfg.TASK_PROFILE,
+        "--configs", ",".join(payload.configs),
+        "--seed", str(payload.seed),
+    ]
+    if not payload.judge:
+        cmd_args.append("--no-judge")
+    try:
+        with open(cfg.REPORTS_DIR / "compare_run.log", "a", encoding="utf-8") as fh:
+            subprocess.Popen(cmd_args, cwd=str(cfg.BASE_DIR), stdout=fh, stderr=subprocess.STDOUT)
+    except OSError as exc:
+        log.error("Не удалось запустить сравнение: %s", exc, exc_info=exc)
+        return error_json(f"Не удалось запустить сравнение: {exc}")
+    return {
+        "ok": True,
+        "message": "Сравнение запущено в фоне. Отчёты появятся в reports/. "
+                   "Лог: reports/compare_run.log",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Чат
 # ---------------------------------------------------------------------------
-def _merge_params(overrides) -> GenerationParams:
-    """Собирает параметры генерации: дефолты из конфига + переопределения.
+_PARAM_FIELDS = (
+    "temperature", "top_p", "top_k", "repeat_penalty",
+    "num_predict", "num_ctx", "seed", "keep_alive",
+)
 
-    На Дне 27 UI переопределения не шлёт; на Дне 29 сюда придут значения
-    temperature / max_tokens / num_ctx из интерфейса.
+
+def _merge_params(session: Session, overrides) -> GenerationParams:
+    """Собирает параметры: текущие параметры сессии + переопределения запроса.
+
+    На Дне 29 базой служат параметры сессии (их меняют панелью «Параметры»
+    или командами /params), а запрос может разово переопределить любые поля.
     """
-    params = GenerationParams(
-        temperature=cfg.DEFAULT_GENERATION.temperature,
-        top_p=cfg.DEFAULT_GENERATION.top_p,
-        max_tokens=cfg.DEFAULT_GENERATION.max_tokens,
-        num_ctx=cfg.DEFAULT_GENERATION.num_ctx,
-        keep_alive=cfg.DEFAULT_GENERATION.keep_alive,
-    )
+    params = GenerationParams(**session.params.to_dict())
     if overrides is not None:
-        if overrides.temperature is not None:
-            params.temperature = overrides.temperature
-        if overrides.top_p is not None:
-            params.top_p = overrides.top_p
-        if overrides.max_tokens is not None:
-            params.max_tokens = overrides.max_tokens
-        if overrides.num_ctx is not None:
-            params.num_ctx = overrides.num_ctx
+        for key in _PARAM_FIELDS:
+            value = getattr(overrides, key, None)
+            if value is not None:
+                setattr(params, key, value)
     return params
 
 
@@ -383,7 +548,8 @@ async def _chat_sse(request: Request, payload: ChatRequest, params: GenerationPa
 
 @app.post("/api/chat")
 async def api_chat(request: Request, payload: ChatRequest):
-    params = _merge_params(payload.params)
+    session = get_session(request)
+    params = _merge_params(session, payload.params)
 
     if payload.stream:
         return StreamingResponse(
@@ -397,7 +563,6 @@ async def api_chat(request: Request, payload: ChatRequest):
         )
 
     # Нестриминговый режим
-    session = get_session(request)
     client = get_client(request)
     message = payload.message
 

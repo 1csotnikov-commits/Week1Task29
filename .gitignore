@@ -17,6 +17,9 @@ logs/
 .vscode/
 .idea/
 
+# День 29: сырые данные сравнения не коммитим (отчёты REPORT_*.md — коммитим)
+reports/raw_*.json
+
 # Прочее
 *.egg-info/
 .pytest_cache/
