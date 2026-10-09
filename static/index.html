@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Локальный LLM-чат — День 27</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Локальный LLM-чат</div>
+    <div class="status" id="status">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">Проверка доступности Ollama…</span>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <label for="model-select">Модель:</label>
+    <select id="model-select" title="Текущая модель Ollama"></select>
+    <span id="model-hint" class="hint"></span>
+    <span class="spacer"></span>
+    <button id="btn-help" class="btn ghost" title="Показать справку по командам">Справка</button>
+    <button id="btn-clear" class="btn ghost" title="Очистить историю диалога">Очистить чат</button>
+    <button id="btn-export" class="btn ghost" title="Скачать историю в JSON">Экспорт</button>
+  </div>
+
+  <main id="chat" class="chat" aria-live="polite"></main>
+
+  <footer class="composer">
+    <textarea id="input" rows="3"
+      placeholder="Введите сообщение или команду, например /help. Enter — отправить, Shift+Enter — новая строка."></textarea>
+    <button id="btn-send" class="btn primary">Отправить</button>
+  </footer>
+
+  <div class="meta">
+    <span id="meta-history">История: 0 сообщений</span>
+    <span id="meta-model"></span>
+    <span id="meta-uptime"></span>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
